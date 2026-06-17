@@ -2,9 +2,8 @@ import argparse
 from pathlib import Path
 
 import cv2
-from ultralytics import YOLO
 
-from detector import MODEL_PATH, detect, save_alert
+from detector import MODEL_PATH, detect, load_model, save_alert
 
 
 def parse_source(source: str):
@@ -123,7 +122,7 @@ def main():
     source = parse_source(args.source)
     output = Path(args.output) if args.output else None
     alerts_dir = Path(args.alerts_dir) if args.alerts_dir else None
-    model = YOLO(args.model)
+    model = load_model(args.model)
 
     if isinstance(source, int) or str(source).lower().endswith((".mp4", ".avi", ".mov", ".mkv")):
         run_video(model, source, output, args.conf, alerts_dir)

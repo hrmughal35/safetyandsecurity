@@ -10,6 +10,20 @@ from ultralytics import YOLO
 
 MODEL_PATH = Path(__file__).resolve().parent / "best.onnx"
 SAMPLE_IMAGES = ["output2.jpg", "output1.jpg", "output.jpg"]
+LABEL_FIXES = {"Smooking": "Smoking", "smooking": "Smoking"}
+
+
+def normalize_label(label: str) -> str:
+    return LABEL_FIXES.get(label, label)
+
+
+def apply_label_fixes(model: YOLO) -> YOLO:
+    if model.names:
+        model.names = {
+            key: normalize_label(str(value))
+            for key, value in model.names.items()
+        }
+    return model
 
 
 @dataclass
@@ -38,7 +52,7 @@ class DetectionResult:
 
 
 def load_model(model_path: Path | str = MODEL_PATH) -> YOLO:
-    return YOLO(str(model_path))
+    return apply_label_fixes(YOLO(str(model_path)))
 
 
 def decode_image(file_bytes: bytes) -> np.ndarray:
@@ -53,6 +67,11 @@ def detect(image_bgr: np.ndarray, model: YOLO, conf: float = 0.25) -> DetectionR
     start = time.perf_counter()
     results = model(image_bgr, conf=conf, verbose=False)
     result = results[0]
+    if hasattr(result, "names") and result.names:
+        result.names = {
+            key: normalize_label(str(value))
+            for key, value in result.names.items()
+        }
     annotated = result.plot()
     inference_ms = (time.perf_counter() - start) * 1000
 
@@ -63,7 +82,7 @@ def detect(image_bgr: np.ndarray, model: YOLO, conf: float = 0.25) -> DetectionR
             cls = int(box.cls[0])
             detections.append(
                 Detection(
-                    label=result.names[cls],
+                    label=normalize_label(result.names[cls]),
                     confidence=float(box.conf[0]),
                     x1=x1,
                     y1=y1,
