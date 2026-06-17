@@ -6,7 +6,7 @@ import av
 import cv2
 import streamlit as st
 from PIL import Image
-from streamlit_webrtc import VideoTransformerBase, webrtc_streamer
+from streamlit_webrtc import RTCConfiguration, VideoTransformerBase, webrtc_streamer
 
 from detector import SAMPLE_IMAGES, decode_image, detect, load_model
 
@@ -104,7 +104,7 @@ def load_sample_image(name: str):
 class SmokingDetector(VideoTransformerBase):
     def __init__(self, conf: float = 0.25):
         self.conf = conf
-        self.model = get_model()
+        self.model = load_model()
         self.frame_index = 0
         self.detect_every = 2
         self.last_annotated = None
@@ -164,17 +164,21 @@ with tab_live:
         key="live-cctv",
         video_transformer_factory=create_detector,
         media_stream_constraints={"video": True, "audio": False},
+        rtc_configuration=RTCConfiguration(
+            {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+        ),
         async_processing=True,
     )
 
     st.info("Click **Start** above, allow camera access, and monitoring begins automatically.")
 
-    if webrtc_ctx.state.playing and webrtc_ctx.video_transformer:
+    state = webrtc_ctx.state
+    if state and state.playing and webrtc_ctx.video_transformer:
         transformer = webrtc_ctx.video_transformer
         render_live_metrics(transformer)
         st.markdown("#### Live detection details")
         render_live_detection_table(transformer)
-    elif webrtc_ctx.state.playing:
+    elif state and state.playing:
         st.warning("Camera started. Initializing detector…")
     else:
         st.info("Camera is off. Press **Start** to begin live monitoring.")

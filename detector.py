@@ -11,19 +11,11 @@ from ultralytics import YOLO
 MODEL_PATH = Path(__file__).resolve().parent / "best.onnx"
 SAMPLE_IMAGES = ["output2.jpg", "output1.jpg", "output.jpg"]
 LABEL_FIXES = {"Smooking": "Smoking", "smooking": "Smoking"}
+_MODEL_CACHE: YOLO | None = None
 
 
 def normalize_label(label: str) -> str:
     return LABEL_FIXES.get(label, label)
-
-
-def apply_label_fixes(model: YOLO) -> YOLO:
-    if model.names:
-        model.names = {
-            key: normalize_label(str(value))
-            for key, value in model.names.items()
-        }
-    return model
 
 
 @dataclass
@@ -52,7 +44,10 @@ class DetectionResult:
 
 
 def load_model(model_path: Path | str = MODEL_PATH) -> YOLO:
-    return apply_label_fixes(YOLO(str(model_path)))
+    global _MODEL_CACHE
+    if _MODEL_CACHE is None:
+        _MODEL_CACHE = YOLO(str(model_path))
+    return _MODEL_CACHE
 
 
 def decode_image(file_bytes: bytes) -> np.ndarray:
@@ -63,26 +58,54 @@ def decode_image(file_bytes: bytes) -> np.ndarray:
     return image
 
 
+def annotate_frame(image_bgr: np.ndarray, detections: list[Detection]) -> np.ndarray:
+    annotated = image_bgr.copy()
+    color = (255, 89, 71)
+
+    for item in detections:
+        cv2.rectangle(annotated, (item.x1, item.y1), (item.x2, item.y2), color, 2)
+        label = f"{item.label} {item.confidence:.2f}"
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        scale = 0.6
+        thickness = 2
+        (text_width, text_height), _ = cv2.getTextSize(label, font, scale, thickness)
+        top = max(item.y1, text_height + 12)
+        cv2.rectangle(
+            annotated,
+            (item.x1, top - text_height - 8),
+            (item.x1 + text_width + 8, top),
+            color,
+            -1,
+        )
+        cv2.putText(
+            annotated,
+            label,
+            (item.x1 + 4, top - 4),
+            font,
+            scale,
+            (255, 255, 255),
+            thickness,
+            cv2.LINE_AA,
+        )
+
+    return annotated
+
+
 def detect(image_bgr: np.ndarray, model: YOLO, conf: float = 0.25) -> DetectionResult:
     start = time.perf_counter()
     results = model(image_bgr, conf=conf, verbose=False)
     result = results[0]
-    if hasattr(result, "names") and result.names:
-        result.names = {
-            key: normalize_label(str(value))
-            for key, value in result.names.items()
-        }
-    annotated = result.plot()
     inference_ms = (time.perf_counter() - start) * 1000
 
     detections: list[Detection] = []
     if result.boxes is not None:
+        names = result.names
         for box in result.boxes:
             x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
             cls = int(box.cls[0])
             detections.append(
                 Detection(
-                    label=normalize_label(result.names[cls]),
+                    label=normalize_label(str(names[cls])),
                     confidence=float(box.conf[0]),
                     x1=x1,
                     y1=y1,
@@ -91,6 +114,7 @@ def detect(image_bgr: np.ndarray, model: YOLO, conf: float = 0.25) -> DetectionR
                 )
             )
 
+    annotated = annotate_frame(image_bgr, detections)
     return DetectionResult(annotated, detections, inference_ms)
 
 
