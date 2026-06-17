@@ -1,14 +1,16 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 
 import cv2
+import os
 import streamlit as st
 from PIL import Image
 
 from detector import SAMPLE_IMAGES, decode_image, detect, load_model
 
 ROOT = Path(__file__).resolve().parent
+IS_STREAMLIT_CLOUD = os.path.isdir("/mount/src")
 
 
 @st.cache_resource
@@ -69,26 +71,134 @@ def load_sample_image(name: str):
     return cv2.imread(str(path))
 
 
-def show_detection_result(result, source_label: str):
+def show_detection_result(result, source_label: str, show_download: bool = True):
     render_metrics(result)
     st.image(result.annotated_rgb, caption="Detection result", use_container_width=True)
 
     if result.count:
         st.error(f"Smoking activity detected — {result.count} instance(s)")
-        st.toast("Alert: smoking detected", icon="🚨")
     else:
         st.success("No smoking activity detected")
 
-    st.download_button(
-        label="Download annotated image",
-        data=image_to_download_bytes(result.annotated_rgb),
-        file_name=f"detection_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg",
-        mime="image/jpeg",
-        use_container_width=True,
-    )
+    if show_download:
+        st.download_button(
+            label="Download annotated image",
+            data=image_to_download_bytes(result.annotated_rgb),
+            file_name=f"detection_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg",
+            mime="image/jpeg",
+            use_container_width=True,
+        )
+
     st.markdown("#### Detection details")
     render_detection_table(result)
     st.caption(f"Source: {source_label}")
+
+
+def stop_local_camera():
+    cap = st.session_state.get("local_cap")
+    if cap is not None:
+        cap.release()
+    st.session_state.local_cap = None
+    st.session_state.local_monitoring = False
+
+
+def render_local_live_monitor(confidence: float):
+    st.caption(
+        "Automatic live monitoring — frames are analyzed continuously, "
+        "like a CCTV feed. Press Stop when finished."
+    )
+
+    if "local_monitoring" not in st.session_state:
+        st.session_state.local_monitoring = False
+    if "local_cap" not in st.session_state:
+        st.session_state.local_cap = None
+
+    btn_start, btn_stop = st.columns(2)
+    with btn_start:
+        if st.button("Start live monitoring", type="primary", use_container_width=True):
+            stop_local_camera()
+            cap = cv2.VideoCapture(0)
+            if not cap.isOpened():
+                st.error("Could not open webcam. Check that a camera is connected.")
+            else:
+                st.session_state.local_cap = cap
+                st.session_state.local_monitoring = True
+                st.rerun()
+    with btn_stop:
+        if st.button("Stop monitoring", use_container_width=True):
+            stop_local_camera()
+            st.rerun()
+
+    if not st.session_state.local_monitoring or st.session_state.local_cap is None:
+        st.info("Press **Start live monitoring** to begin automatic CCTV-style analysis.")
+        return
+
+    st.success("Live monitoring active — analyzing automatically…")
+
+    @st.fragment(run_every=timedelta(milliseconds=700))
+    def live_monitoring_loop():
+        cap = st.session_state.local_cap
+        if cap is None or not st.session_state.local_monitoring:
+            return
+
+        ret, frame = cap.read()
+        if not ret:
+            st.warning("Lost camera feed.")
+            stop_local_camera()
+            return
+
+        result = detect(frame, get_model(), conf=confidence)
+        col_feed, col_stats = st.columns([1.2, 1])
+        with col_feed:
+            st.image(result.annotated_rgb, caption="Live feed", use_container_width=True)
+        with col_stats:
+            render_metrics(result)
+            if result.count:
+                st.error(f"Smoking activity detected — {result.count} instance(s)")
+            else:
+                st.success("Monitoring… no smoking detected")
+            render_detection_table(result)
+
+    live_monitoring_loop()
+
+
+def render_cloud_camera_monitor(confidence: float):
+    st.caption(
+        "Cloud demo mode: browser security requires a manual capture on the free Streamlit link. "
+        "For automatic live CCTV, run the app locally (see sidebar)."
+    )
+
+    col_cam, col_result = st.columns(2, gap="large")
+
+    with col_cam:
+        camera = st.camera_input("Allow camera, then tap capture to scan")
+
+    with col_result:
+        st.subheader("Scan result")
+        if camera is None:
+            st.info("Capture a frame from the camera to analyze it.")
+        else:
+            frame_bytes = camera.getvalue()
+            frame_hash = hash(frame_bytes)
+            if st.session_state.get("camera_frame_hash") != frame_hash:
+                input_image = decode_image(frame_bytes)
+                st.session_state.camera_frame_hash = frame_hash
+                st.session_state.camera_result = detect(
+                    input_image,
+                    get_model(),
+                    conf=confidence,
+                )
+
+            show_detection_result(
+                st.session_state.camera_result,
+                "Camera capture",
+            )
+
+    st.warning(
+        "The public Streamlit Cloud link cannot access your webcam continuously in the background. "
+        "Run this command on your computer for automatic live monitoring:\n\n"
+        "`py -m streamlit run streamlit_app.py`"
+    )
 
 
 st.set_page_config(
@@ -107,17 +217,19 @@ with st.sidebar:
     st.header("Settings")
     confidence = st.slider("Confidence threshold", 0.1, 0.9, 0.25, 0.05)
     st.divider()
-    st.markdown("**How to demo**")
-    st.markdown(
-        "1. Open **Camera Monitor**\n"
-        "2. Allow camera access\n"
-        "3. Tap capture to scan a frame\n"
-        "4. Or use **Image Analysis** for samples/upload"
+    st.markdown("**Automatic live CCTV**")
+    st.code("py -m streamlit run streamlit_app.py", language="bash")
+    st.caption(
+        "Run on your PC, open the local URL, then use Camera Monitor → Start live monitoring."
     )
     st.divider()
-    st.markdown("**True live CCTV on your PC**")
+    st.markdown("**CLI live mode**")
     st.code("py app.py", language="bash")
-    st.caption("Continuous webcam monitoring works locally, not on free cloud hosting.")
+    st.divider()
+    if IS_STREAMLIT_CLOUD:
+        st.info("You are on Streamlit Cloud (manual camera capture only).")
+    else:
+        st.success("Local mode — automatic live monitoring is available.")
     st.divider()
     st.caption("Proof-of-concept demo. Alerts, CCTV integration, and dashboards can be added in the next phase.")
 
@@ -125,45 +237,10 @@ tab_live, tab_image, tab_about = st.tabs(["Camera Monitor", "Image Analysis", "A
 
 with tab_live:
     st.subheader("Camera monitoring")
-    st.caption(
-        "Point your camera at the scene and tap the camera button to scan. "
-        "Each capture is analyzed instantly — like a CCTV snapshot check."
-    )
-
-    col_cam, col_result = st.columns(2, gap="large")
-
-    with col_cam:
-        camera = st.camera_input("Allow camera, then tap capture to scan")
-        if camera:
-            st.success("Frame captured — analyzing below.")
-
-    with col_result:
-        st.subheader("Scan result")
-        if camera is None:
-            st.info("Capture a frame from the camera to start monitoring.")
-        else:
-            frame_bytes = camera.getvalue()
-            frame_hash = hash(frame_bytes)
-            if st.session_state.get("camera_frame_hash") != frame_hash:
-                with st.spinner("Analyzing frame..."):
-                    input_image = decode_image(frame_bytes)
-                    st.session_state.camera_frame_hash = frame_hash
-                    st.session_state.camera_result = detect(
-                        input_image,
-                        get_model(),
-                        conf=confidence,
-                    )
-                    st.session_state.camera_source = "Camera capture"
-
-            show_detection_result(
-                st.session_state.camera_result,
-                st.session_state.get("camera_source", "Camera capture"),
-            )
-
-    st.info(
-        "On free cloud hosting, browser live video streaming is limited. "
-        "For uninterrupted real-time CCTV-style monitoring, run `py app.py` on your computer."
-    )
+    if IS_STREAMLIT_CLOUD:
+        render_cloud_camera_monitor(confidence)
+    else:
+        render_local_live_monitor(confidence)
 
 with tab_image:
     col_input, col_output = st.columns(2, gap="large")
@@ -223,17 +300,17 @@ with tab_about:
     st.markdown(
         """
         This module is part of a **Safety & Security Analytics** platform. It uses a
-        YOLO11 model to identify smoking activity in camera captures and images.
+        YOLO11 model to identify smoking activity in live camera feeds and images.
 
-        **Web demo (Streamlit Cloud)**
-        - Camera capture with instant scan
+        **Automatic live monitoring (local)**
+        - Run `py -m streamlit run streamlit_app.py` on your computer
+        - Open **Camera Monitor** → **Start live monitoring**
+        - Frames are analyzed continuously like CCTV
+
+        **Cloud link (Streamlit Cloud)**
+        - Manual camera capture per scan
         - Image upload and sample testing
-        - Bounding boxes with confidence scores
-        - Downloadable evidence image
-
-        **Local demo (full live CCTV)**
-        - Run `py app.py` on your computer
-        - Continuous webcam monitoring with live bounding boxes
+        - Best for sharing a quick demo link
 
         **Planned next phase**
         - Email / SMS / WhatsApp alerts
