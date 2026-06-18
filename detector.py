@@ -118,9 +118,45 @@ def detect(image_bgr: np.ndarray, model: YOLO, conf: float = 0.25) -> DetectionR
     return DetectionResult(annotated, detections, inference_ms)
 
 
+ALERTS_DIR = Path(__file__).resolve().parent / "alerts"
+
+
+def save_violation_alert(result: DetectionResult, alerts_dir: Path = ALERTS_DIR) -> Path:
+    alerts_dir.mkdir(parents=True, exist_ok=True)
+    top_confidence = max((item.confidence for item in result.detections), default=0.0)
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    ms = int((time.time() % 1) * 1000)
+    filename = f"violation_{timestamp}_{ms:03d}_conf{top_confidence:.2f}.jpg"
+    path = alerts_dir / filename
+    cv2.imwrite(str(path), result.annotated_bgr)
+    return path
+
+
+def save_violation_if_detected(
+    result: DetectionResult,
+    alerts_dir: Path = ALERTS_DIR,
+    last_saved_at: float | None = None,
+    cooldown_seconds: float = 0.0,
+) -> tuple[Path | None, float | None]:
+    if result.count == 0:
+        return None, last_saved_at
+
+    now = time.time()
+    if (
+        last_saved_at is not None
+        and cooldown_seconds > 0
+        and (now - last_saved_at) < cooldown_seconds
+    ):
+        return None, last_saved_at
+
+    path = save_violation_alert(result, alerts_dir)
+    return path, now
+
+
 def save_alert(image_bgr: np.ndarray, alerts_dir: Path) -> Path:
     alerts_dir.mkdir(parents=True, exist_ok=True)
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    path = alerts_dir / f"smoking_alert_{timestamp}.jpg"
+    ms = int((time.time() % 1) * 1000)
+    path = alerts_dir / f"violation_{timestamp}_{ms:03d}.jpg"
     cv2.imwrite(str(path), image_bgr)
     return path

@@ -7,7 +7,14 @@ import os
 import streamlit as st
 from PIL import Image
 
-from detector import SAMPLE_IMAGES, decode_image, detect, load_model
+from detector import (
+    ALERTS_DIR,
+    SAMPLE_IMAGES,
+    decode_image,
+    detect,
+    load_model,
+    save_violation_if_detected,
+)
 
 ROOT = Path(__file__).resolve().parent
 IS_STREAMLIT_CLOUD = os.path.isdir("/mount/src")
@@ -71,12 +78,50 @@ def load_sample_image(name: str):
     return cv2.imread(str(path))
 
 
-def show_detection_result(result, source_label: str, show_download: bool = True):
+def handle_violation_save(result, cooldown_seconds: float = 0.0) -> Path | None:
+    if "last_violation_saved_at" not in st.session_state:
+        st.session_state.last_violation_saved_at = None
+
+    alert_path, saved_at = save_violation_if_detected(
+        result,
+        ALERTS_DIR,
+        st.session_state.last_violation_saved_at,
+        cooldown_seconds=cooldown_seconds,
+    )
+    if alert_path:
+        st.session_state.last_violation_saved_at = saved_at
+    return alert_path
+
+
+def show_saved_violation_notice(alert_path: Path | None):
+    if alert_path:
+        st.warning(f"Violation captured and saved to `{alert_path}`")
+
+
+def render_alerts_sidebar():
+    st.markdown("**Violation folder**")
+    st.code(str(ALERTS_DIR), language="text")
+    if ALERTS_DIR.exists():
+        saved = sorted(ALERTS_DIR.glob("violation_*.jpg"), reverse=True)
+        st.caption(f"Saved violations: {len(saved)}")
+        if saved:
+            st.caption(f"Latest: `{saved[0].name}`")
+    else:
+        st.caption("No violations saved yet.")
+
+
+def show_detection_result(
+    result,
+    source_label: str,
+    show_download: bool = True,
+    alert_path: Path | None = None,
+):
     render_metrics(result)
     st.image(result.annotated_rgb, caption="Detection result", use_container_width=True)
 
     if result.count:
         st.error(f"Smoking activity detected — {result.count} instance(s)")
+        show_saved_violation_notice(alert_path)
     else:
         st.success("No smoking activity detected")
 
@@ -148,6 +193,7 @@ def render_local_live_monitor(confidence: float):
             return
 
         result = detect(frame, get_model(), conf=confidence)
+        alert_path = handle_violation_save(result, cooldown_seconds=5.0)
         col_feed, col_stats = st.columns([1.2, 1])
         with col_feed:
             st.image(result.annotated_rgb, caption="Live feed", use_container_width=True)
@@ -155,6 +201,7 @@ def render_local_live_monitor(confidence: float):
             render_metrics(result)
             if result.count:
                 st.error(f"Smoking activity detected — {result.count} instance(s)")
+                show_saved_violation_notice(alert_path)
             else:
                 st.success("Monitoring… no smoking detected")
             render_detection_table(result)
@@ -188,10 +235,14 @@ def render_cloud_camera_monitor(confidence: float):
                     get_model(),
                     conf=confidence,
                 )
+                st.session_state.camera_alert_path = handle_violation_save(
+                    st.session_state.camera_result
+                )
 
             show_detection_result(
                 st.session_state.camera_result,
                 "Camera capture",
+                alert_path=st.session_state.get("camera_alert_path"),
             )
 
     st.warning(
@@ -230,6 +281,8 @@ with st.sidebar:
         st.info("You are on Streamlit Cloud (manual camera capture only).")
     else:
         st.success("Local mode — automatic live monitoring is available.")
+    st.divider()
+    render_alerts_sidebar()
     st.divider()
     st.caption("Proof-of-concept demo. Alerts, CCTV integration, and dashboards can be added in the next phase.")
 
@@ -292,8 +345,9 @@ with tab_image:
         else:
             with st.spinner("Analyzing frame..."):
                 result = detect(input_image, get_model(), conf=confidence)
+                alert_path = handle_violation_save(result)
 
-            show_detection_result(result, source_label)
+            show_detection_result(result, source_label, alert_path=alert_path)
 
 with tab_about:
     st.subheader("About this demo")
@@ -301,6 +355,11 @@ with tab_about:
         """
         This module is part of a **Safety & Security Analytics** platform. It uses a
         YOLO11 model to identify smoking activity in live camera feeds and images.
+
+        **Automatic violation capture**
+        - Detected violations are saved to the `alerts/` folder
+        - Each image includes bounding boxes and confidence score
+        - Live monitoring saves a new snapshot every 5 seconds while violation continues
 
         **Automatic live monitoring (local)**
         - Run `py -m streamlit run streamlit_app.py` on your computer

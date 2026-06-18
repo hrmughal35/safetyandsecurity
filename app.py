@@ -3,7 +3,7 @@ from pathlib import Path
 
 import cv2
 
-from detector import MODEL_PATH, detect, load_model, save_alert
+from detector import ALERTS_DIR, MODEL_PATH, detect, load_model, save_violation_if_detected
 
 
 def parse_source(source: str):
@@ -35,9 +35,10 @@ def run_image(model, source: str, output: Path | None, conf: float, alerts_dir: 
         cv2.imwrite(str(output), result.annotated_bgr)
         print(f"Saved result to {output}")
 
-    if result.count and alerts_dir:
-        alert_path = save_alert(result.annotated_bgr, alerts_dir)
-        print(f"Alert saved to {alert_path}")
+    if alerts_dir:
+        alert_path, _ = save_violation_if_detected(result, alerts_dir)
+        if alert_path:
+            print(f"Violation saved to {alert_path}")
     elif not output:
         cv2.imshow("YOLO Inference", result.annotated_bgr)
         cv2.waitKey(0)
@@ -114,8 +115,8 @@ def main():
     )
     parser.add_argument(
         "--alerts-dir",
-        default="alerts",
-        help="Folder to save alert snapshots when smoking is detected",
+        default=str(ALERTS_DIR),
+        help="Folder to save violation snapshots when smoking is detected",
     )
     args = parser.parse_args()
 
