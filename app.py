@@ -64,7 +64,7 @@ def run_video(model, source, output: Path | None, conf: float, alerts_dir: Path 
             (width, height),
         )
 
-    alert_saved = False
+    last_alert_at = None
     try:
         while True:
             ret, frame = cap.read()
@@ -72,10 +72,15 @@ def run_video(model, source, output: Path | None, conf: float, alerts_dir: Path 
                 break
 
             result = detect(frame, model, conf=conf)
-            if result.count and alerts_dir and not alert_saved:
-                alert_path = save_alert(result.annotated_bgr, alerts_dir)
-                print(f"Alert saved to {alert_path}")
-                alert_saved = True
+            if alerts_dir:
+                alert_path, last_alert_at = save_violation_if_detected(
+                    result,
+                    alerts_dir,
+                    last_alert_at,
+                    cooldown_seconds=3.0,
+                )
+                if alert_path:
+                    print(f"Violation saved to {alert_path}")
 
             if writer:
                 writer.write(result.annotated_bgr)

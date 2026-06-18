@@ -209,6 +209,159 @@ def render_local_live_monitor(confidence: float):
     live_monitoring_loop()
 
 
+def process_uploaded_video(
+    video_bytes: bytes,
+    video_name: str,
+    confidence: float,
+    frame_stride: int,
+    cooldown_seconds: float,
+):
+    temp_dir = ROOT / "temp_uploads"
+    temp_dir.mkdir(exist_ok=True)
+    temp_path = temp_dir / video_name
+    temp_path.write_bytes(video_bytes)
+
+    cap = cv2.VideoCapture(str(temp_path))
+    if not cap.isOpened():
+        st.error("Could not read the uploaded video.")
+        temp_path.unlink(missing_ok=True)
+        return None
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    model = get_model()
+
+    progress = st.progress(0, text="Scanning video...")
+    status = st.empty()
+
+    frame_idx = 0
+    scanned_frames = 0
+    detections_found = 0
+    saved_captures: list[dict] = []
+    last_saved_at = None
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frame_idx += 1
+        if frame_idx % frame_stride != 0:
+            continue
+
+        scanned_frames += 1
+        result = detect(frame, model, conf=confidence)
+
+        if result.count:
+            detections_found += 1
+            alert_path, last_saved_at = save_violation_if_detected(
+                result,
+                ALERTS_DIR,
+                last_saved_at,
+                cooldown_seconds=cooldown_seconds,
+            )
+            if alert_path:
+                saved_captures.append(
+                    {
+                        "frame": frame_idx,
+                        "time": frame_idx / fps,
+                        "path": alert_path,
+                        "result": result,
+                    }
+                )
+
+        if total_frames > 0:
+            progress.progress(
+                min(frame_idx / total_frames, 1.0),
+                text=f"Scanning frame {frame_idx}/{total_frames}...",
+            )
+        else:
+            status.caption(f"Scanned {scanned_frames} frames...")
+
+    cap.release()
+    temp_path.unlink(missing_ok=True)
+    progress.empty()
+    status.empty()
+
+    return {
+        "total_frames": total_frames or frame_idx,
+        "scanned_frames": scanned_frames,
+        "detections_found": detections_found,
+        "saved_captures": saved_captures,
+        "fps": fps,
+    }
+
+
+def render_video_results(summary: dict):
+    st.markdown("#### Scan summary")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total frames", summary["total_frames"])
+    c2.metric("Frames scanned", summary["scanned_frames"])
+    c3.metric("Violations detected", summary["detections_found"])
+    c4.metric("Images captured", len(summary["saved_captures"]))
+
+    if not summary["saved_captures"]:
+        st.success("No smoking activity detected in this video.")
+        return
+
+    st.error(f"{len(summary['saved_captures'])} violation image(s) captured and saved.")
+    st.markdown("#### Captured violation images")
+
+    for index, item in enumerate(summary["saved_captures"], start=1):
+        minutes = int(item["time"] // 60)
+        seconds = int(item["time"] % 60)
+        st.markdown(
+            f"**Capture {index}** — frame {item['frame']} "
+            f"({minutes:02d}:{seconds:02d})"
+        )
+        st.image(
+            item["result"].annotated_rgb,
+            caption=item["path"].name,
+            use_container_width=True,
+        )
+        st.download_button(
+            label=f"Download capture {index}",
+            data=image_to_download_bytes(item["result"].annotated_rgb),
+            file_name=item["path"].name,
+            mime="image/jpeg",
+            key=f"video_capture_{index}_{item['frame']}",
+        )
+
+
+def render_video_analysis(confidence: float, frame_stride: int, cooldown_seconds: float):
+    st.caption(
+        "Upload a video to scan frame-by-frame. When smoking is detected, "
+        "annotated evidence images are saved automatically."
+    )
+
+    uploaded = st.file_uploader(
+        "Upload a video",
+        type=["mp4", "avi", "mov", "mkv", "webm"],
+    )
+
+    if uploaded is None:
+        st.info("Upload a video file to start analysis.")
+        return
+
+    st.video(uploaded)
+    analyze = st.button("Analyze video", type="primary", use_container_width=True)
+
+    if not analyze:
+        return
+
+    with st.spinner("Processing video. This may take a minute for longer files..."):
+        summary = process_uploaded_video(
+            uploaded.read(),
+            uploaded.name,
+            confidence,
+            frame_stride,
+            cooldown_seconds,
+        )
+
+    if summary:
+        render_video_results(summary)
+
+
 def render_cloud_camera_monitor(confidence: float):
     st.caption(
         "Cloud demo mode: browser security requires a manual capture on the free Streamlit link. "
@@ -267,6 +420,10 @@ with st.spinner("Loading AI model..."):
 with st.sidebar:
     st.header("Settings")
     confidence = st.slider("Confidence threshold", 0.1, 0.9, 0.25, 0.05)
+    frame_stride = st.slider("Video frame skip", 1, 30, 5, 1)
+    st.caption("Analyze every Nth frame in uploaded videos (higher = faster).")
+    capture_cooldown = st.slider("Capture cooldown (seconds)", 1, 30, 3, 1)
+    st.caption("Minimum gap between saved violation images in video/live mode.")
     st.divider()
     st.markdown("**Automatic live CCTV**")
     st.code("py -m streamlit run streamlit_app.py", language="bash")
@@ -286,7 +443,9 @@ with st.sidebar:
     st.divider()
     st.caption("Proof-of-concept demo. Alerts, CCTV integration, and dashboards can be added in the next phase.")
 
-tab_live, tab_image, tab_about = st.tabs(["Camera Monitor", "Image Analysis", "About"])
+tab_live, tab_image, tab_video, tab_about = st.tabs(
+    ["Camera Monitor", "Image Analysis", "Video Analysis", "About"]
+)
 
 with tab_live:
     st.subheader("Camera monitoring")
@@ -349,12 +508,21 @@ with tab_image:
 
             show_detection_result(result, source_label, alert_path=alert_path)
 
+with tab_video:
+    st.subheader("Video analysis")
+    render_video_analysis(confidence, frame_stride, capture_cooldown)
+
 with tab_about:
     st.subheader("About this demo")
     st.markdown(
         """
         This module is part of a **Safety & Security Analytics** platform. It uses a
         YOLO11 model to identify smoking activity in live camera feeds and images.
+
+        **Video analysis**
+        - Upload MP4/AVI/MOV and scan frame-by-frame
+        - Violation frames are auto-captured to `alerts/`
+        - Download captured evidence from the results panel
 
         **Automatic violation capture**
         - Detected violations are saved to the `alerts/` folder

@@ -1,4 +1,5 @@
 alerts/
+temp_uploads/
 __pycache__/
 *.pyc
 detection_result.jpg

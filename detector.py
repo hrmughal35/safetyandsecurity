@@ -277,12 +277,17 @@ def detect(image_bgr: np.ndarray, model=None, conf: float = 0.25) -> DetectionRe
 ALERTS_DIR = Path(__file__).resolve().parent / "alerts"
 
 
-def save_violation_alert(result: DetectionResult, alerts_dir: Path = ALERTS_DIR) -> Path:
+def save_violation_alert(
+    result: DetectionResult,
+    alerts_dir: Path = ALERTS_DIR,
+    suffix: str = "",
+) -> Path:
     alerts_dir.mkdir(parents=True, exist_ok=True)
     top_confidence = max((item.confidence for item in result.detections), default=0.0)
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     ms = int((time.time() % 1) * 1000)
-    filename = f"violation_{timestamp}_{ms:03d}_conf{top_confidence:.2f}.jpg"
+    suffix_part = f"_{suffix}" if suffix else ""
+    filename = f"violation_{timestamp}_{ms:03d}{suffix_part}_conf{top_confidence:.2f}.jpg"
     path = alerts_dir / filename
     cv2.imwrite(str(path), result.annotated_bgr)
     return path
@@ -307,12 +312,3 @@ def save_violation_if_detected(
 
     path = save_violation_alert(result, alerts_dir)
     return path, now
-
-
-def save_alert(image_bgr: np.ndarray, alerts_dir: Path) -> Path:
-    alerts_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    ms = int((time.time() % 1) * 1000)
-    path = alerts_dir / f"violation_{timestamp}_{ms:03d}.jpg"
-    cv2.imwrite(str(path), image_bgr)
-    return path
