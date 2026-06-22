@@ -7,12 +7,12 @@ import os
 import streamlit as st
 from PIL import Image
 
-from config import (
-    DEFAULT_ALERT_CONFIDENCE,
-    DEFAULT_CONFIDENCE,
-    DEFAULT_CONFIRM_FRAMES,
-    DEFAULT_FRAME_STRIDE,
-)
+# Local defaults (avoid Streamlit module-cache import issues with config.py)
+DEFAULT_CONFIDENCE = 0.45
+DEFAULT_ALERT_CONFIDENCE = 0.48
+DEFAULT_CONFIRM_FRAMES = 1
+DEFAULT_FRAME_STRIDE = 2
+
 from detector import (
     ALERTS_DIR,
     SAMPLE_IMAGES,
