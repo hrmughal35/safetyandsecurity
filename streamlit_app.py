@@ -9,6 +9,9 @@ from PIL import Image
 
 from detector import (
     ALERTS_DIR,
+    DEFAULT_ALERT_CONFIDENCE,
+    DEFAULT_CONFIDENCE,
+    DEFAULT_CONFIRM_FRAMES,
     SAMPLE_IMAGES,
     decode_image,
     detect,
@@ -78,7 +81,11 @@ def load_sample_image(name: str):
     return cv2.imread(str(path))
 
 
-def handle_violation_save(result, cooldown_seconds: float = 0.0) -> Path | None:
+def handle_violation_save(
+    result,
+    cooldown_seconds: float = 0.0,
+    min_alert_confidence: float = DEFAULT_ALERT_CONFIDENCE,
+) -> Path | None:
     if "last_violation_saved_at" not in st.session_state:
         st.session_state.last_violation_saved_at = None
 
@@ -87,6 +94,7 @@ def handle_violation_save(result, cooldown_seconds: float = 0.0) -> Path | None:
         ALERTS_DIR,
         st.session_state.last_violation_saved_at,
         cooldown_seconds=cooldown_seconds,
+        min_alert_confidence=min_alert_confidence,
     )
     if alert_path:
         st.session_state.last_violation_saved_at = saved_at
@@ -147,7 +155,11 @@ def stop_local_camera():
     st.session_state.local_monitoring = False
 
 
-def render_local_live_monitor(confidence: float):
+def render_local_live_monitor(
+    confidence: float,
+    min_alert_confidence: float,
+    confirm_frames: int,
+):
     st.caption(
         "Automatic live monitoring — frames are analyzed continuously, "
         "like a CCTV feed. Press Stop when finished."
@@ -178,6 +190,9 @@ def render_local_live_monitor(confidence: float):
         st.info("Press **Start live monitoring** to begin automatic CCTV-style analysis.")
         return
 
+    if "live_consecutive_hits" not in st.session_state:
+        st.session_state.live_consecutive_hits = 0
+
     st.success("Live monitoring active — analyzing automatically…")
 
     @st.fragment(run_every=timedelta(milliseconds=700))
@@ -193,7 +208,20 @@ def render_local_live_monitor(confidence: float):
             return
 
         result = detect(frame, get_model(), conf=confidence)
-        alert_path = handle_violation_save(result, cooldown_seconds=5.0)
+        if result.count:
+            st.session_state.live_consecutive_hits += 1
+        else:
+            st.session_state.live_consecutive_hits = 0
+
+        alert_path = None
+        if st.session_state.live_consecutive_hits >= confirm_frames:
+            alert_path = handle_violation_save(
+                result,
+                cooldown_seconds=5.0,
+                min_alert_confidence=min_alert_confidence,
+            )
+            if alert_path:
+                st.session_state.live_consecutive_hits = 0
         col_feed, col_stats = st.columns([1.2, 1])
         with col_feed:
             st.image(result.annotated_rgb, caption="Live feed", use_container_width=True)
@@ -215,6 +243,8 @@ def process_uploaded_video(
     confidence: float,
     frame_stride: int,
     cooldown_seconds: float,
+    confirm_frames: int,
+    min_alert_confidence: float,
 ):
     temp_dir = ROOT / "temp_uploads"
     temp_dir.mkdir(exist_ok=True)
@@ -239,6 +269,7 @@ def process_uploaded_video(
     detections_found = 0
     saved_captures: list[dict] = []
     last_saved_at = None
+    consecutive_hits = 0
 
     while True:
         ret, frame = cap.read()
@@ -253,22 +284,28 @@ def process_uploaded_video(
         result = detect(frame, model, conf=confidence)
 
         if result.count:
+            consecutive_hits += 1
             detections_found += 1
-            alert_path, last_saved_at = save_violation_if_detected(
-                result,
-                ALERTS_DIR,
-                last_saved_at,
-                cooldown_seconds=cooldown_seconds,
-            )
-            if alert_path:
-                saved_captures.append(
-                    {
-                        "frame": frame_idx,
-                        "time": frame_idx / fps,
-                        "path": alert_path,
-                        "result": result,
-                    }
+            if consecutive_hits >= confirm_frames:
+                alert_path, last_saved_at = save_violation_if_detected(
+                    result,
+                    ALERTS_DIR,
+                    last_saved_at,
+                    cooldown_seconds=cooldown_seconds,
+                    min_alert_confidence=min_alert_confidence,
                 )
+                if alert_path:
+                    saved_captures.append(
+                        {
+                            "frame": frame_idx,
+                            "time": frame_idx / fps,
+                            "path": alert_path,
+                            "result": result,
+                        }
+                    )
+                    consecutive_hits = 0
+        else:
+            consecutive_hits = 0
 
         if total_frames > 0:
             progress.progress(
@@ -328,10 +365,21 @@ def render_video_results(summary: dict):
         )
 
 
-def render_video_analysis(confidence: float, frame_stride: int, cooldown_seconds: float):
+def render_video_analysis(
+    confidence: float,
+    frame_stride: int,
+    cooldown_seconds: float,
+    confirm_frames: int,
+    min_alert_confidence: float,
+):
     st.caption(
-        "Upload a video to scan frame-by-frame. When smoking is detected, "
-        "annotated evidence images are saved automatically."
+        "Upload a video to scan frame-by-frame. Violations are saved only when "
+        "detection is strong and confirmed across multiple frames."
+    )
+    st.warning(
+        "This demo model was not trained on your CCTV footage. "
+        "Low-confidence alerts on tables, shadows, and objects are expected. "
+        "Use confidence 0.55+ and confirm frames to reduce false alarms."
     )
 
     uploaded = st.file_uploader(
@@ -356,6 +404,8 @@ def render_video_analysis(confidence: float, frame_stride: int, cooldown_seconds
             confidence,
             frame_stride,
             cooldown_seconds,
+            confirm_frames,
+            min_alert_confidence,
         )
 
     if summary:
@@ -389,7 +439,8 @@ def render_cloud_camera_monitor(confidence: float):
                     conf=confidence,
                 )
                 st.session_state.camera_alert_path = handle_violation_save(
-                    st.session_state.camera_result
+                    st.session_state.camera_result,
+                    min_alert_confidence=DEFAULT_ALERT_CONFIDENCE,
                 )
 
             show_detection_result(
@@ -419,7 +470,30 @@ with st.spinner("Loading AI model..."):
 
 with st.sidebar:
     st.header("Settings")
-    confidence = st.slider("Confidence threshold", 0.1, 0.9, 0.25, 0.05)
+    confidence = st.slider(
+        "Confidence threshold",
+        0.40,
+        0.90,
+        DEFAULT_CONFIDENCE,
+        0.05,
+        help="Ignore detections below this score. 0.55+ reduces false alarms.",
+    )
+    min_alert_confidence = st.slider(
+        "Minimum confidence to save violation",
+        0.40,
+        0.90,
+        DEFAULT_ALERT_CONFIDENCE,
+        0.05,
+        help="Only capture images when the top detection is at least this confident.",
+    )
+    confirm_frames = st.slider(
+        "Confirm frames (video/live)",
+        1,
+        5,
+        DEFAULT_CONFIRM_FRAMES,
+        1,
+        help="Require detections in this many consecutive scanned frames before saving.",
+    )
     frame_stride = st.slider("Video frame skip", 1, 30, 5, 1)
     st.caption("Analyze every Nth frame in uploaded videos (higher = faster).")
     capture_cooldown = st.slider("Capture cooldown (seconds)", 1, 30, 3, 1)
@@ -452,7 +526,7 @@ with tab_live:
     if IS_STREAMLIT_CLOUD:
         render_cloud_camera_monitor(confidence)
     else:
-        render_local_live_monitor(confidence)
+        render_local_live_monitor(confidence, min_alert_confidence, confirm_frames)
 
 with tab_image:
     col_input, col_output = st.columns(2, gap="large")
@@ -510,7 +584,13 @@ with tab_image:
 
 with tab_video:
     st.subheader("Video analysis")
-    render_video_analysis(confidence, frame_stride, capture_cooldown)
+    render_video_analysis(
+        confidence,
+        frame_stride,
+        capture_cooldown,
+        confirm_frames,
+        min_alert_confidence,
+    )
 
 with tab_about:
     st.subheader("About this demo")

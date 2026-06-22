@@ -12,6 +12,9 @@ SAMPLE_IMAGES = ["output2.jpg", "output1.jpg", "output.jpg"]
 LABEL_FIXES = {"Smooking": "Smoking", "smooking": "Smoking"}
 CLASS_NAMES = {0: "Smoking"}
 INPUT_SIZE = 640
+DEFAULT_CONFIDENCE = 0.55
+DEFAULT_ALERT_CONFIDENCE = 0.55
+DEFAULT_CONFIRM_FRAMES = 2
 _MODEL_CACHE = None
 
 
@@ -198,6 +201,40 @@ def detect_onnx(image_bgr: np.ndarray, model: OnnxDetector, conf: float = 0.25) 
     return detections
 
 
+def filter_detections(
+    detections: list[Detection],
+    image_shape: tuple[int, int, int],
+    min_confidence: float = DEFAULT_CONFIDENCE,
+    min_area_ratio: float = 0.0005,
+    max_area_ratio: float = 0.25,
+) -> list[Detection]:
+    """Drop low-confidence and implausible box sizes (common false positives)."""
+    image_h, image_w = image_shape[:2]
+    image_area = image_h * image_w
+    filtered: list[Detection] = []
+
+    for item in detections:
+        if item.confidence < min_confidence:
+            continue
+
+        box_w = max(item.x2 - item.x1, 0)
+        box_h = max(item.y2 - item.y1, 0)
+        box_area = box_w * box_h
+        area_ratio = box_area / max(image_area, 1)
+
+        if area_ratio < min_area_ratio or area_ratio > max_area_ratio:
+            continue
+
+        filtered.append(item)
+
+    return filtered
+
+
+def build_result(image_bgr: np.ndarray, detections: list[Detection], inference_ms: float) -> DetectionResult:
+    annotated = annotate_frame(image_bgr, detections)
+    return DetectionResult(annotated, detections, inference_ms)
+
+
 def detect_ultralytics(image_bgr: np.ndarray, model, conf: float = 0.25) -> list[Detection]:
     results = model(image_bgr, conf=conf, verbose=False)
     result = results[0]
@@ -254,7 +291,12 @@ def annotate_frame(image_bgr: np.ndarray, detections: list[Detection]) -> np.nda
     return annotated
 
 
-def detect(image_bgr: np.ndarray, model=None, conf: float = 0.25) -> DetectionResult:
+def detect(
+    image_bgr: np.ndarray,
+    model=None,
+    conf: float = DEFAULT_CONFIDENCE,
+    min_confidence: float | None = None,
+) -> DetectionResult:
     if model is None:
         backend, engine = load_model()
     elif isinstance(model, tuple):
@@ -262,16 +304,19 @@ def detect(image_bgr: np.ndarray, model=None, conf: float = 0.25) -> DetectionRe
     else:
         backend, engine = "ultralytics", model
 
+    threshold = min_confidence if min_confidence is not None else conf
+    scan_conf = min(conf, threshold)
+
     start = time.perf_counter()
 
     if backend == "onnx":
-        detections = detect_onnx(image_bgr, engine, conf=conf)
+        raw = detect_onnx(image_bgr, engine, conf=scan_conf)
     else:
-        detections = detect_ultralytics(image_bgr, engine, conf=conf)
+        raw = detect_ultralytics(image_bgr, engine, conf=scan_conf)
 
+    detections = filter_detections(raw, image_bgr.shape, min_confidence=threshold)
     inference_ms = (time.perf_counter() - start) * 1000
-    annotated = annotate_frame(image_bgr, detections)
-    return DetectionResult(annotated, detections, inference_ms)
+    return build_result(image_bgr, detections, inference_ms)
 
 
 ALERTS_DIR = Path(__file__).resolve().parent / "alerts"
@@ -298,8 +343,13 @@ def save_violation_if_detected(
     alerts_dir: Path = ALERTS_DIR,
     last_saved_at: float | None = None,
     cooldown_seconds: float = 0.0,
+    min_alert_confidence: float = DEFAULT_ALERT_CONFIDENCE,
 ) -> tuple[Path | None, float | None]:
     if result.count == 0:
+        return None, last_saved_at
+
+    top_confidence = max(item.confidence for item in result.detections)
+    if top_confidence < min_alert_confidence:
         return None, last_saved_at
 
     now = time.time()
