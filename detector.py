@@ -7,14 +7,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from config import DEFAULT_ALERT_CONFIDENCE, DEFAULT_CONFIDENCE, DEFAULT_CONFIRM_FRAMES
+
 MODEL_PATH = Path(__file__).resolve().parent / "best.onnx"
 SAMPLE_IMAGES = ["output2.jpg", "output1.jpg", "output.jpg"]
 LABEL_FIXES = {"Smooking": "Smoking", "smooking": "Smoking"}
 CLASS_NAMES = {0: "Smoking"}
 INPUT_SIZE = 640
-DEFAULT_CONFIDENCE = 0.55
-DEFAULT_ALERT_CONFIDENCE = 0.55
-DEFAULT_CONFIRM_FRAMES = 2
 _MODEL_CACHE = None
 
 

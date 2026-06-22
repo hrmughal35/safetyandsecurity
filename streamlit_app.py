@@ -7,11 +7,9 @@ import os
 import streamlit as st
 from PIL import Image
 
+from config import DEFAULT_ALERT_CONFIDENCE, DEFAULT_CONFIDENCE, DEFAULT_CONFIRM_FRAMES
 from detector import (
     ALERTS_DIR,
-    DEFAULT_ALERT_CONFIDENCE,
-    DEFAULT_CONFIDENCE,
-    DEFAULT_CONFIRM_FRAMES,
     SAMPLE_IMAGES,
     decode_image,
     detect,
