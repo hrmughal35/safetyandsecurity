@@ -84,6 +84,13 @@ def handle_violation_save(
     cooldown_seconds: float = 0.0,
     min_alert_confidence: float = DEFAULT_ALERT_CONFIDENCE,
 ) -> Path | None:
+    if result.count == 0:
+        return None
+
+    top_confidence = max(item.confidence for item in result.detections)
+    if top_confidence < min_alert_confidence:
+        return None
+
     if "last_violation_saved_at" not in st.session_state:
         st.session_state.last_violation_saved_at = None
 
@@ -92,7 +99,6 @@ def handle_violation_save(
         ALERTS_DIR,
         st.session_state.last_violation_saved_at,
         cooldown_seconds=cooldown_seconds,
-        min_alert_confidence=min_alert_confidence,
     )
     if alert_path:
         st.session_state.last_violation_saved_at = saved_at
@@ -285,23 +291,24 @@ def process_uploaded_video(
             consecutive_hits += 1
             detections_found += 1
             if consecutive_hits >= confirm_frames:
-                alert_path, last_saved_at = save_violation_if_detected(
-                    result,
-                    ALERTS_DIR,
-                    last_saved_at,
-                    cooldown_seconds=cooldown_seconds,
-                    min_alert_confidence=min_alert_confidence,
-                )
-                if alert_path:
-                    saved_captures.append(
-                        {
-                            "frame": frame_idx,
-                            "time": frame_idx / fps,
-                            "path": alert_path,
-                            "result": result,
-                        }
+                top_confidence = max(item.confidence for item in result.detections)
+                if top_confidence >= min_alert_confidence:
+                    alert_path, last_saved_at = save_violation_if_detected(
+                        result,
+                        ALERTS_DIR,
+                        last_saved_at,
+                        cooldown_seconds=cooldown_seconds,
                     )
-                    consecutive_hits = 0
+                    if alert_path:
+                        saved_captures.append(
+                            {
+                                "frame": frame_idx,
+                                "time": frame_idx / fps,
+                                "path": alert_path,
+                                "result": result,
+                            }
+                        )
+                        consecutive_hits = 0
         else:
             consecutive_hits = 0
 
