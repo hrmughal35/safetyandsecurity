@@ -7,7 +7,12 @@ import os
 import streamlit as st
 from PIL import Image
 
-from config import DEFAULT_ALERT_CONFIDENCE, DEFAULT_CONFIDENCE, DEFAULT_CONFIRM_FRAMES
+from config import (
+    DEFAULT_ALERT_CONFIDENCE,
+    DEFAULT_CONFIDENCE,
+    DEFAULT_CONFIRM_FRAMES,
+    DEFAULT_FRAME_STRIDE,
+)
 from detector import (
     ALERTS_DIR,
     SAMPLE_IMAGES,
@@ -383,8 +388,8 @@ def render_video_analysis(
     )
     st.warning(
         "This demo model was not trained on your CCTV footage. "
-        "Low-confidence alerts on tables, shadows, and objects are expected. "
-        "Use confidence 0.55+ and confirm frames to reduce false alarms."
+        "If real smoking is missed, lower confidence to 0.40 and set frame skip to 1–2. "
+        "If false alarms appear on tables/shadows, raise confidence to 0.55+."
     )
 
     uploaded = st.file_uploader(
@@ -477,15 +482,15 @@ with st.sidebar:
     st.header("Settings")
     confidence = st.slider(
         "Confidence threshold",
-        0.40,
+        0.35,
         0.90,
         DEFAULT_CONFIDENCE,
         0.05,
-        help="Ignore detections below this score. 0.55+ reduces false alarms.",
+        help="Show/save detections at or above this score. Try 0.40 if real smoking is missed.",
     )
     min_alert_confidence = st.slider(
         "Minimum confidence to save violation",
-        0.40,
+        0.35,
         0.90,
         DEFAULT_ALERT_CONFIDENCE,
         0.05,
@@ -499,7 +504,14 @@ with st.sidebar:
         1,
         help="Require detections in this many consecutive scanned frames before saving.",
     )
-    frame_stride = st.slider("Video frame skip", 1, 30, 5, 1)
+    frame_stride = st.slider(
+        "Video frame skip",
+        1,
+        30,
+        DEFAULT_FRAME_STRIDE,
+        1,
+        help="1 = every frame (best accuracy, slower). 2–3 recommended for CCTV.",
+    )
     st.caption("Analyze every Nth frame in uploaded videos (higher = faster).")
     capture_cooldown = st.slider("Capture cooldown (seconds)", 1, 30, 3, 1)
     st.caption("Minimum gap between saved violation images in video/live mode.")

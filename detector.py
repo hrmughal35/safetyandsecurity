@@ -7,7 +7,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from config import DEFAULT_ALERT_CONFIDENCE, DEFAULT_CONFIDENCE, DEFAULT_CONFIRM_FRAMES
+from config import (
+    DEFAULT_ALERT_CONFIDENCE,
+    DEFAULT_CONFIDENCE,
+    DEFAULT_CONFIRM_FRAMES,
+    MODEL_SCAN_FLOOR,
+)
 
 MODEL_PATH = Path(__file__).resolve().parent / "best.onnx"
 SAMPLE_IMAGES = ["output2.jpg", "output1.jpg", "output.jpg"]
@@ -204,8 +209,8 @@ def filter_detections(
     detections: list[Detection],
     image_shape: tuple[int, int, int],
     min_confidence: float = DEFAULT_CONFIDENCE,
-    min_area_ratio: float = 0.0005,
-    max_area_ratio: float = 0.25,
+    min_area_ratio: float = 0.0001,
+    max_area_ratio: float = 0.60,
 ) -> list[Detection]:
     """Drop low-confidence and implausible box sizes (common false positives)."""
     image_h, image_w = image_shape[:2]
@@ -304,7 +309,7 @@ def detect(
         backend, engine = "ultralytics", model
 
     threshold = min_confidence if min_confidence is not None else conf
-    scan_conf = min(conf, threshold)
+    scan_conf = max(MODEL_SCAN_FLOOR, threshold - 0.15)
 
     start = time.perf_counter()
 
